@@ -30,10 +30,21 @@
   <input id="email" type="email" placeholder="מייל" autocomplete="username">
   <input id="pw" type="password" placeholder="סיסמה" autocomplete="current-password">
   <button id="go">כניסה</button>
+  <a href="#" id="forgot">שכחתי סיסמה</a>
   <div id="err" style="color:#c00"></div>
 </div>
+<div id="pwbox" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:2000">
+  <div style="max-width:320px; margin:80px auto; padding:16px; background:var(--bg); display:flex; flex-direction:column; gap:8px">
+    <h3 style="margin:0">קביעת סיסמה</h3>
+    <input id="pw1" type="password" placeholder="סיסמה חדשה" autocomplete="new-password">
+    <input id="pw2" type="password" placeholder="שוב, לאימות" autocomplete="new-password">
+    <button id="pwsave">שמירה</button>
+    <button id="pwcancel">ביטול</button>
+    <div id="pwmsg"></div>
+  </div>
+</div>
 <div id="app">
-  <div id="bar"><div id="run"></div><div class="legend" id="legend"></div><div id="note" style="color:var(--muted)"></div>
+  <div id="bar"><div style="float:left"><button id="setpw">קביעת סיסמה</button></div><div id="run"></div><div class="legend" id="legend"></div><div id="note" style="color:var(--muted)"></div>
     </div>
   <div id="map"></div>
   <div id="table"></div>
@@ -47,9 +58,29 @@ document.getElementById("go").onclick = async () => {
   if (error) { err.textContent = "כניסה נכשלה"; return; }
   start();
 };
+let started = false;
+sb.auth.onAuthStateChange((event) => { if (event === "PASSWORD_RECOVERY") showPw(); });
 sb.auth.getSession().then(({ data }) => { if (data.session) start(); });
+document.getElementById("forgot").onclick = async (e) => {
+  e.preventDefault();
+  if (!email.value) { err.textContent = "כתבו את המייל ואז לחצו שוב."; return; }
+  const { error } = await sb.auth.resetPasswordForEmail(email.value, { redirectTo: location.origin + location.pathname });
+  err.textContent = error ? "השליחה נכשלה, נסו שוב מאוחר יותר." : "אם המייל רשום, נשלח אליו קישור לקביעת סיסמה.";
+};
+function showPw() { pwmsg.textContent = ""; pw1.value = pw2.value = ""; pwbox.style.display = "block"; }
+document.getElementById("setpw").onclick = showPw;
+pwcancel.onclick = () => { pwbox.style.display = "none"; };
+pwsave.onclick = async () => {
+  if (pw1.value.length < 8) { pwmsg.textContent = "לפחות 8 תווים."; return; }
+  if (pw1.value !== pw2.value) { pwmsg.textContent = "הסיסמאות לא זהות."; return; }
+  const { error } = await sb.auth.updateUser({ password: pw1.value });
+  if (error) { pwmsg.textContent = "השמירה נכשלה."; return; }
+  pwmsg.textContent = "הסיסמה נשמרה.";
+  setTimeout(() => { pwbox.style.display = "none"; start(); }, 800);
+};
 function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 async function start() {
+  if (started) return; started = true;
   login.style.display = "none"; app.style.display = "flex";
   note.textContent = NOTE;
   legend.innerHTML = Object.entries(COLORS).map(([k,v]) => `<span style="background:${v}"></span>${k}`).join("");
@@ -71,10 +102,11 @@ async function start() {
       const { data } = await sb.from("parcels_classified").select("reasons,yeud_str").eq("run_id", r.run_id)
         .eq("parcel_key", f.properties.parcel_key).limit(1);
       const x = (data && data[0]) || {};
-      l.bindPopup(`<b>${esc(f.properties.parcel_key)}</b><br>${esc(f.properties.grp)}<br>${esc(x.yeud_str)} ${esc(f.properties.yeud_note)}<br><small>${esc(JSON.stringify(x.reasons))}</small>`).openPopup();
+      l.bindPopup(parcelPopup(f.properties, x, clusterOf[f.properties.parcel_key])).openPopup();
     })
   }).addTo(map);
   let parcelsLoaded = false;
+  const clusterOf = {};
   const hint = document.createElement("div"); hint.style.color = "var(--muted)";
   hint.textContent = "להצגת החלקות: הגדילו את המפה."; bar.appendChild(hint);
   async function loadParcels() {
@@ -87,6 +119,7 @@ async function start() {
   }
   map.on("zoomend", loadParcels);
   const clusters = await pageAll("clusters", "cluster_id,area_dunam,apartments_est,flags,parcel_keys,geom_wgs84", r.run_id);
+  for (const c of clusters) for (const k of c.parcel_keys) clusterOf[k] = c;
   L.geoJSON(clusters.map(c => ({ type:"Feature", geometry:c.geom_wgs84, properties:c })), {
     style: { color: "#0057b8", weight: 3, fill: false },
     onEachFeature: (f, l) => { const c = f.properties; l.bindPopup(`<b>${esc(c.cluster_id)}</b><br>${c.area_dunam} דונם, ${c.apartments_est} דירות (אומדן)<br>${esc((c.flags||[]).join(", "))}<br><small>${esc(c.parcel_keys.join(", "))}</small>`); }
@@ -96,6 +129,34 @@ async function start() {
   tMap.onclick = () => { table.style.display = "none"; document.getElementById("map").style.display = "block"; map.invalidateSize(); };
   tTable.onclick = () => { document.getElementById("map").style.display = "none"; table.style.display = "block"; };
   tCsv.onclick = () => downloadCsv(clusters, r);
+}
+function reasonLine(group, x) {
+  const parts = [x["סיבה"]];
+  if (x["תכנית"]) parts.push(`תכנית ${x["תכנית"]}`);
+  if (x["סטטוס"]) parts.push(x["סטטוס"]);
+  if (x["ועדה"]) parts.push(`ועדה: ${x["ועדה"]}`);
+  if (x["תאריך"]) parts.push(`אושרה ${x["תאריך"]}${x["הנחה"] ? " (הנחה)" : ""}`);
+  if (x["יחס_חפיפה"] != null) parts.push(`חפיפה ${Math.round(x["יחס_חפיפה"] * 1000) / 10}%`);
+  if (x["חפיפה_מר"] != null) parts.push(`${x["חפיפה_מר"]} מ"ר`);
+  if (x["פירוט"]) parts.push(x["פירוט"]);
+  if (x["מזהה"]) parts.push(x["מזהה"]);
+  return `${group}: ${parts.filter(Boolean).join(", ")}`;
+}
+function parcelPopup(p, x, c) {
+  const lines = [`<b>${esc(p.parcel_key)}</b>`, esc(p.grp)];
+  if (x.yeud_str) lines.push(`ייעוד: ${esc(x.yeud_str)}`);
+  if (p.yeud_note) lines.push(esc(p.yeud_note));
+  const reasons = x.reasons || {};
+  for (const [g, items] of Object.entries(reasons)) {
+    if (g === "מידע") continue;
+    for (const it of items) lines.push(esc(reasonLine(g, it)));
+  }
+  for (const it of (reasons["מידע"] || [])) lines.push(`<i>${esc(it["שורה"] || it["סיבה"])}</i>`);
+  if (c) {
+    const fl = (c.flags || []).join(", ");
+    lines.push(`<b>מקבץ ${esc(c.cluster_id)}</b>: ${c.area_dunam} דונם, ${c.apartments_est} דירות (אומדן, הנחה)${fl ? ", " + esc(fl) : ""}`);
+  }
+  return lines.join("<br>");
 }
 const COLS = [["cluster_id","מקבץ"],["area_dunam","שטח (דונם)"],["apartments_est","דירות (אומדן)"],["flags","סימונים"],["parcel_keys","גוש-חלקה"]];
 function renderTable(cs, r) {
