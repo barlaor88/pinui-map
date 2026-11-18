@@ -64,13 +64,28 @@ async function start() {
   }
   const map = L.map("map").setView([32.145, 34.84], 14);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "OpenStreetMap" }).addTo(map);
-  // חלקות לא רלוונטיות לא מצוירות, ולכן לא נשלפות בכלל
-  const parcels = await pageAll("parcels_classified", "parcel_key,grp,yeud_str,yeud_note,reasons,geom_wgs84", r.run_id,
-                                q => q.neq("grp", "לא רלוונטית"));
-  L.geoJSON(parcels.map(p => ({ type:"Feature", geometry:p.geom_wgs84, properties:p })), {
+  // מקבצים קודם. חלקות רק מהגדלה 16 ומעלה (מדידה 18.11: שליפת החלקות 8.4 שניות). בלי הסיבות: נשלפות בלחיצה.
+  const parcelLayer = L.geoJSON(null, {
     style: f => ({ color: COLORS[f.properties.grp], weight: 1, fillOpacity: 0.35 }),
-    onEachFeature: (f, l) => l.bindPopup(`<b>${esc(f.properties.parcel_key)}</b><br>${esc(f.properties.grp)}<br>${esc(f.properties.yeud_str)} ${esc(f.properties.yeud_note)}<br><small>${esc(JSON.stringify(f.properties.reasons))}</small>`)
+    onEachFeature: (f, l) => l.on("click", async () => {
+      const { data } = await sb.from("parcels_classified").select("reasons,yeud_str").eq("run_id", r.run_id)
+        .eq("parcel_key", f.properties.parcel_key).limit(1);
+      const x = (data && data[0]) || {};
+      l.bindPopup(`<b>${esc(f.properties.parcel_key)}</b><br>${esc(f.properties.grp)}<br>${esc(x.yeud_str)} ${esc(f.properties.yeud_note)}<br><small>${esc(JSON.stringify(x.reasons))}</small>`).openPopup();
+    })
   }).addTo(map);
+  let parcelsLoaded = false;
+  const hint = document.createElement("div"); hint.style.color = "var(--muted)";
+  hint.textContent = "להצגת החלקות: הגדילו את המפה."; bar.appendChild(hint);
+  async function loadParcels() {
+    if (parcelsLoaded || map.getZoom() < 16) return;
+    parcelsLoaded = true; hint.textContent = "טוען חלקות...";
+    const parcels = await pageAll("parcels_classified", "parcel_key,grp,yeud_note,geom_wgs84", r.run_id,
+                                  q => q.neq("grp", "לא רלוונטית"));
+    parcelLayer.addData(parcels.map(p => ({ type:"Feature", geometry:p.geom_wgs84, properties:p })));
+    parcelLayer.bringToBack(); hint.textContent = "";
+  }
+  map.on("zoomend", loadParcels);
   const clusters = await pageAll("clusters", "cluster_id,area_dunam,apartments_est,flags,parcel_keys,geom_wgs84", r.run_id);
   L.geoJSON(clusters.map(c => ({ type:"Feature", geometry:c.geom_wgs84, properties:c })), {
     style: { color: "#0057b8", weight: 3, fill: false },
