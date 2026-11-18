@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>איתור מתחמים</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<style>
+  :root { --bg:#fff; --fg:#1b1b1b; --muted:#666; --card:#f4f4f4; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141414; --fg:#eee; --muted:#aaa; --card:#222; } }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; }
+  #login { max-width:320px; margin:80px auto; padding:0 16px; display:flex; flex-direction:column; gap:8px; }
+  #login input,#login button { padding:10px; font-size:16px; }
+  #app { display:none; height:100%; flex-direction:column; }
+  #bar { padding:8px 16px; background:var(--card); font-size:14px; }
+  #map { flex:1; }
+  .legend span { display:inline-block; width:12px; height:12px; margin-inline:8px 4px; vertical-align:middle; }
+  #tabs button { padding:6px 12px; margin-inline-end:6px; }
+  #table { display:none; flex:1; overflow:auto; padding:0 16px 16px; }
+  #table table { border-collapse:collapse; width:100%; font-size:14px; }
+  #table th, #table td { border-bottom:1px solid var(--card); padding:6px; text-align:start; vertical-align:top; }
+</style>
+</head>
+<body>
+<div id="login">
+  <h2>כניסה</h2>
+  <input id="email" type="email" placeholder="מייל" autocomplete="username">
+  <input id="pw" type="password" placeholder="סיסמה" autocomplete="current-password">
+  <button id="go">כניסה</button>
+  <div id="err" style="color:#c00"></div>
+</div>
+<div id="app">
+  <div id="bar"><div id="run"></div><div class="legend" id="legend"></div><div id="note" style="color:var(--muted)"></div>
+    </div>
+  <div id="map"></div>
+  <div id="table"></div>
+</div>
+<script>
+const sb = supabase.createClient("https://dqiivguyusktueioigpc.supabase.co", "sb_publishable_98oew8OXAF5ZoGVGmpAYfA_CJGe4nW3");
+const NOTE = "פער ידוע: תכניות לפני שלב קיום תנאי סף, חתימות בלי תכנית, ותכניות ישנות שלא הוכרזו אינן במקורות. נבדקות בשטח. מתחמים בשלב גישוש, לפני תכנית, לא מופיעים במקורות. הם נתפסים רק בבדיקת הכפילות מול מה שבטיפולנו ובשטח.";
+const COLORS = {"תפוסה":"#d62728","לבדיקה":"#ff9f1c","שימור":"#8c564b","התחדשות נקודתית":"#9467bd","פנויה":"#2ca02c"};
+document.getElementById("go").onclick = async () => {
+  const { error } = await sb.auth.signInWithPassword({ email: email.value, password: pw.value });
+  if (error) { err.textContent = "כניסה נכשלה"; return; }
+  start();
+};
+sb.auth.getSession().then(({ data }) => { if (data.session) start(); });
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+async function start() {
+  login.style.display = "none"; app.style.display = "flex";
+  note.textContent = NOTE;
+  legend.innerHTML = Object.entries(COLORS).map(([k,v]) => `<span style="background:${v}"></span>${k}`).join("");
+  const { data: runs } = await sb.from("run_log").select("run_id,finished_at,notices").eq("status","הצליחה")
+    .order("started_at", { ascending: false }).limit(1);
+  if (!runs || !runs.length) { run.textContent = "אין עדיין ריצה תקינה, או שאין הרשאה."; return; }
+  const r = runs[0];
+  run.textContent = `ריצה תקינה אחרונה: ${new Date(r.finished_at).toLocaleString("he-IL")}`;
+  if (r.notices && r.notices.length) {
+    const n = document.createElement("div"); n.style.color = "#c00"; n.style.fontWeight = "600";
+    n.textContent = r.notices.join(" "); bar.prepend(n);
+  }
+  const map = L.map("map").setView([32.145, 34.84], 14);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "OpenStreetMap" }).addTo(map);
+  const parcels = await pageAll("parcels_classified", "parcel_key,grp,yeud_str,yeud_note,reasons,geom_wgs84", r.run_id);
+  L.geoJSON(parcels.filter(p => p.grp !== "לא רלוונטית").map(p => ({ type:"Feature", geometry:p.geom_wgs84, properties:p })), {
+    style: f => ({ color: COLORS[f.properties.grp], weight: 1, fillOpacity: 0.35 }),
+    onEachFeature: (f, l) => l.bindPopup(`<b>${esc(f.properties.parcel_key)}</b><br>${esc(f.properties.grp)}<br>${esc(f.properties.yeud_str)} ${esc(f.properties.yeud_note)}<br><small>${esc(JSON.stringify(f.properties.reasons))}</small>`)
+  }).addTo(map);
+  const clusters = await pageAll("clusters", "cluster_id,area_dunam,apartments_est,flags,parcel_keys,geom_wgs84", r.run_id);
+  L.geoJSON(clusters.map(c => ({ type:"Feature", geometry:c.geom_wgs84, properties:c })), {
+    style: { color: "#0057b8", weight: 3, fill: false },
+    onEachFeature: (f, l) => { const c = f.properties; l.bindPopup(`<b>${esc(c.cluster_id)}</b><br>${c.area_dunam} דונם, ${c.apartments_est} דירות (אומדן)<br>${esc((c.flags||[]).join(", "))}<br><small>${esc(c.parcel_keys.join(", "))}</small>`); }
+  }).addTo(map);
+  if (!window.tTable) return;  // גרסת מפה בלבד, בלי טבלה
+  renderTable(clusters, r);
+  tMap.onclick = () => { table.style.display = "none"; document.getElementById("map").style.display = "block"; map.invalidateSize(); };
+  tTable.onclick = () => { document.getElementById("map").style.display = "none"; table.style.display = "block"; };
+  tCsv.onclick = () => downloadCsv(clusters, r);
+}
+const COLS = [["cluster_id","מקבץ"],["area_dunam","שטח (דונם)"],["apartments_est","דירות (אומדן)"],["flags","סימונים"],["parcel_keys","גוש-חלקה"]];
+function renderTable(cs, r) {
+  const rows = cs.map(c => "<tr>" + COLS.map(([k]) => `<td>${esc(Array.isArray(c[k]) ? c[k].join(", ") : c[k])}</td>`).join("") + "</tr>").join("");
+  table.innerHTML = `<p>${cs.length} מקבצים. גודל דירה טיפוסי הוא הנחה. ${esc(NOTE)}</p><table><thead><tr>${COLS.map(c => `<th>${c[1]}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
+}
+function downloadCsv(cs, r) {
+  const q = v => '"' + String(Array.isArray(v) ? v.join("; ") : (v ?? "")).replace(/"/g, '""') + '"';
+  const csv = "\ufeff" + ["# " + NOTE, COLS.map(c => q(c[1])).join(","), ...cs.map(c => COLS.map(([k]) => q(c[k])).join(","))].join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  a.download = `clusters_${r.run_id}.csv`; a.click();
+}
+async function pageAll(table, cols, runId) {
+  let out = [], from = 0;
+  for (;;) {
+    const { data, error } = await sb.from(table).select(cols).eq("run_id", runId).range(from, from + 999);
+    if (error || !data) break;
+    out = out.concat(data);
+    if (data.length < 1000) break;
+    from += 1000;
+  }
+  return out;
+}
+</script>
+</body>
+</html>
