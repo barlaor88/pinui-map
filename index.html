@@ -64,8 +64,10 @@ async function start() {
   }
   const map = L.map("map").setView([32.145, 34.84], 14);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "OpenStreetMap" }).addTo(map);
-  const parcels = await pageAll("parcels_classified", "parcel_key,grp,yeud_str,yeud_note,reasons,geom_wgs84", r.run_id);
-  L.geoJSON(parcels.filter(p => p.grp !== "לא רלוונטית").map(p => ({ type:"Feature", geometry:p.geom_wgs84, properties:p })), {
+  // חלקות לא רלוונטיות לא מצוירות, ולכן לא נשלפות בכלל
+  const parcels = await pageAll("parcels_classified", "parcel_key,grp,yeud_str,yeud_note,reasons,geom_wgs84", r.run_id,
+                                q => q.neq("grp", "לא רלוונטית"));
+  L.geoJSON(parcels.map(p => ({ type:"Feature", geometry:p.geom_wgs84, properties:p })), {
     style: f => ({ color: COLORS[f.properties.grp], weight: 1, fillOpacity: 0.35 }),
     onEachFeature: (f, l) => l.bindPopup(`<b>${esc(f.properties.parcel_key)}</b><br>${esc(f.properties.grp)}<br>${esc(f.properties.yeud_str)} ${esc(f.properties.yeud_note)}<br><small>${esc(JSON.stringify(f.properties.reasons))}</small>`)
   }).addTo(map);
@@ -92,10 +94,12 @@ function downloadCsv(cs, r) {
   a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
   a.download = `clusters_${r.run_id}.csv`; a.click();
 }
-async function pageAll(table, cols, runId) {
+async function pageAll(table, cols, runId, extra) {
   let out = [], from = 0;
   for (;;) {
-    const { data, error } = await sb.from(table).select(cols).eq("run_id", runId).range(from, from + 999);
+    let q = sb.from(table).select(cols).eq("run_id", runId);
+    if (extra) q = extra(q);
+    const { data, error } = await q.order(table === "clusters" ? "cluster_id" : "parcel_key").range(from, from + 999);
     if (error || !data) break;
     out = out.concat(data);
     if (data.length < 1000) break;
