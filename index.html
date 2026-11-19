@@ -106,7 +106,7 @@ async function start() {
   }
   const map = L.map("map").setView([32.145, 34.84], 14);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "OpenStreetMap" }).addTo(map);
-  const clusters = await pageAll("clusters", "cluster_id,area_dunam,apartments_est,flags,parcel_keys,geom_wgs84", r.run_id);
+  const clusters = await pageAll("clusters", "cluster_id,area_dunam,apartments_est,flags,parcel_keys,addresses,n_addresses,geom_wgs84", r.run_id);
   const clusterOf = {};
   for (const c of clusters) for (const k of c.parcel_keys) clusterOf[k] = c;
   const target = wantC ? clusters.find(c => c.cluster_id === wantC) : null;
@@ -144,7 +144,7 @@ async function start() {
   const byId = {};
   const clusterLayer = L.geoJSON(null, {
     style: { color: "#0057b8", weight: 3, fill: false },
-    onEachFeature: (f, l) => { byId[f.properties.cluster_id] = l; l.bindPopup(clusterPopup(f.properties, r)); }
+    onEachFeature: (f, l) => { byId[f.properties.cluster_id] = l; l.bindPopup(clusterPopup(f.properties, r, l.getBounds().getCenter())); }
   }).addTo(map);
   function draw() {
     clusterLayer.clearLayers();
@@ -173,11 +173,17 @@ const LOW = "צמודי קרקע";
 function isLow(c) { return (c.flags || []).includes(LOW); }
 function showLow_el() { return document.getElementById("showLow"); }
 function permalink(r, id) { return `${location.origin}${location.pathname}#run=${encodeURIComponent(r.run_id)}&c=${encodeURIComponent(id)}`; }
-function clusterPopup(c, r) {
+function clusterPopup(c, r, center) {
   const fl = (c.flags || []).join(", ");
+  const ad = c.addresses || [];
+  // קישור בלבד לתצלום אוויר (הוחלט 20.11): בלי שליפה מהשירות
+  const aerial = center ? `https://www.google.com/maps/@?api=1&map_action=map&center=${center.lat.toFixed(6)},${center.lng.toFixed(6)}&zoom=18&basemap=satellite` : null;
   return `<b>${esc(c.cluster_id)}</b><br>${c.area_dunam} דונם, ${c.apartments_est} דירות (אומדן, הנחה)` +
-    `<br>${fl ? "סימונים: " + esc(fl) : "בלי סימונים"}<br><small>${esc(c.parcel_keys.join(", "))}</small>` +
-    `<br><a href="${esc(permalink(r, c.cluster_id))}">קישור קבוע</a>`;
+    `<br>${fl ? "סימונים: " + esc(fl) : "בלי סימונים"}` +
+    `<br><b>כתובות (${ad.length}):</b> ${ad.length ? esc(ad.join(", ")) : "אין"}` +
+    `<br><small>חלקות: ${esc(c.parcel_keys.join(", "))}</small>` +
+    `<br><a href="${esc(permalink(r, c.cluster_id))}">קישור קבוע</a>` +
+    (aerial ? ` | <a href="${esc(aerial)}" target="_blank" rel="noopener noreferrer">תצלום אוויר</a>` : "");
 }
 function reasonLine(group, x) {
   const parts = [x["סיבה"]];
@@ -207,7 +213,7 @@ function parcelPopup(p, x, c) {
   }
   return lines.join("<br>");
 }
-const COLS = [["cluster_id","מקבץ"],["area_dunam","שטח (דונם)"],["apartments_est","דירות (אומדן)"],["flags","סימונים"],["parcel_keys","גוש-חלקה"]];
+const COLS = [["cluster_id","מקבץ"],["area_dunam","שטח (דונם)"],["apartments_est","דירות (אומדן)"],["flags","סימונים"],["n_addresses","מספר כתובות"],["addresses","כתובות"],["parcel_keys","גוש-חלקה"]];
 function renderTable(cs, r, hidden) {
   const rows = cs.map(c => "<tr>" + COLS.map(([k]) => `<td>${esc(Array.isArray(c[k]) ? c[k].join(", ") : c[k])}</td>`).join("") + "</tr>").join("");
   const h = hidden ? ` מוסתרים: ${hidden} ("צמודי קרקע"). הקובץ להורדה כולל את כולם.` : "";
