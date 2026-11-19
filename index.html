@@ -44,7 +44,7 @@
   </div>
 </div>
 <div id="app">
-  <div id="bar"><div style="float:left"><button id="setpw">קביעת סיסמה</button></div><div id="run"></div><div class="legend" id="legend"></div><div id="note" style="color:var(--muted)"></div>
+  <div id="bar"><div style="float:left"><button id="setpw">קביעת סיסמה</button></div><div id="run"></div><label id="lowbox" style="display:none"><input type="checkbox" id="showLow"> הצג צמודי קרקע</label> <span id="hiddenCount"></span><div class="legend" id="legend"></div><div id="note" style="color:var(--muted)"></div>
     </div>
   <div id="map"></div>
   <div id="table"></div>
@@ -84,20 +84,40 @@ async function start() {
   login.style.display = "none"; app.style.display = "flex";
   note.textContent = NOTE;
   legend.innerHTML = Object.entries(COLORS).map(([k,v]) => `<span style="background:${v}"></span>${k}`).join("");
+  // קישור קבוע: #run=<מזהה ריצה>&c=<מזהה מקבץ>. טוען את הריצה הזו גם אם יש חדשה יותר (הוחלט 20.11)
+  const hp = new URLSearchParams(location.hash.slice(1));
+  const wantRun = hp.get("run"), wantC = hp.get("c");
   const { data: runs } = await sb.from("run_log").select("run_id,finished_at,notices").eq("status","הצליחה")
     .order("started_at", { ascending: false }).limit(1);
   if (!runs || !runs.length) { run.textContent = "אין עדיין ריצה תקינה, או שאין הרשאה."; return; }
-  const r = runs[0];
-  run.textContent = `ריצה תקינה אחרונה: ${new Date(r.finished_at).toLocaleString("he-IL")}`;
+  const latest = runs[0];
+  let r = latest;
+  if (wantRun && wantRun !== latest.run_id) {
+    const { data: rr } = await sb.from("run_log").select("run_id,finished_at,notices").eq("status","הצליחה")
+      .eq("run_id", wantRun).limit(1);
+    if (!rr || !rr.length) { run.textContent = `הריצה ${wantRun} לא נמצאה, או שלא הצליחה.`; return; }
+    r = rr[0];
+  }
+  run.textContent = `ריצה ${r.run_id}, ${new Date(r.finished_at).toLocaleString("he-IL")}` +
+    (r.run_id !== latest.run_id ? ", לא האחרונה" : ", הריצה התקינה האחרונה");
   if (r.notices && r.notices.length) {
     const n = document.createElement("div"); n.style.color = "#c00"; n.style.fontWeight = "600";
     n.textContent = r.notices.join(" "); bar.prepend(n);
   }
   const map = L.map("map").setView([32.145, 34.84], 14);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "OpenStreetMap" }).addTo(map);
+  const clusters = await pageAll("clusters", "cluster_id,area_dunam,apartments_est,flags,parcel_keys,geom_wgs84", r.run_id);
+  const clusterOf = {};
+  for (const c of clusters) for (const k of c.parcel_keys) clusterOf[k] = c;
+  const target = wantC ? clusters.find(c => c.cluster_id === wantC) : null;
+  // מתג "הצג צמודי קרקע", כבוי כברירת מחדל. קישור ישיר למקבץ מוסתר מדליק אותו.
+  let showLow = !!(target && isLow(target));
+  showLow_el().checked = showLow; lowbox.style.display = "inline";
+  const isHidden = c => !showLow && isLow(c);
   // מקבצים קודם. חלקות רק מהגדלה 16 ומעלה (מדידה 18.11: שליפת החלקות 8.4 שניות). בלי הסיבות: נשלפות בלחיצה.
   const parcelLayer = L.geoJSON(null, {
     style: f => ({ color: COLORS[f.properties.grp], weight: 1, fillOpacity: 0.35 }),
+    filter: f => !(clusterOf[f.properties.parcel_key] && isHidden(clusterOf[f.properties.parcel_key])),
     onEachFeature: (f, l) => l.on("click", async () => {
       const { data } = await sb.from("parcels_classified").select("reasons,yeud_str").eq("run_id", r.run_id)
         .eq("parcel_key", f.properties.parcel_key).limit(1);
@@ -105,30 +125,59 @@ async function start() {
       l.bindPopup(parcelPopup(f.properties, x, clusterOf[f.properties.parcel_key])).openPopup();
     })
   }).addTo(map);
-  let parcelsLoaded = false;
-  const clusterOf = {};
+  let parcels = null;
   const hint = document.createElement("div"); hint.style.color = "var(--muted)";
   hint.textContent = "להצגת החלקות: הגדילו את המפה."; bar.appendChild(hint);
   async function loadParcels() {
-    if (parcelsLoaded || map.getZoom() < 16) return;
-    parcelsLoaded = true; hint.textContent = "טוען חלקות...";
-    const parcels = await pageAll("parcels_classified", "parcel_key,grp,yeud_note,geom_wgs84", r.run_id,
-                                  q => q.neq("grp", "לא רלוונטית"));
-    parcelLayer.addData(parcels.map(p => ({ type:"Feature", geometry:p.geom_wgs84, properties:p })));
-    parcelLayer.bringToBack(); hint.textContent = "";
+    if (parcels || map.getZoom() < 16) return;
+    parcels = []; hint.textContent = "טוען חלקות...";
+    parcels = await pageAll("parcels_classified", "parcel_key,grp,yeud_note,geom_wgs84", r.run_id,
+                            q => q.neq("grp", "לא רלוונטית"));
+    drawParcels(); hint.textContent = "";
+  }
+  function drawParcels() {
+    parcelLayer.clearLayers();
+    if (parcels) parcelLayer.addData(parcels.map(p => ({ type:"Feature", geometry:p.geom_wgs84, properties:p })));
+    parcelLayer.bringToBack();
   }
   map.on("zoomend", loadParcels);
-  const clusters = await pageAll("clusters", "cluster_id,area_dunam,apartments_est,flags,parcel_keys,geom_wgs84", r.run_id);
-  for (const c of clusters) for (const k of c.parcel_keys) clusterOf[k] = c;
-  L.geoJSON(clusters.map(c => ({ type:"Feature", geometry:c.geom_wgs84, properties:c })), {
+  const byId = {};
+  const clusterLayer = L.geoJSON(null, {
     style: { color: "#0057b8", weight: 3, fill: false },
-    onEachFeature: (f, l) => { const c = f.properties; l.bindPopup(`<b>${esc(c.cluster_id)}</b><br>${c.area_dunam} דונם, ${c.apartments_est} דירות (אומדן)<br>${esc((c.flags||[]).join(", "))}<br><small>${esc(c.parcel_keys.join(", "))}</small>`); }
+    onEachFeature: (f, l) => { byId[f.properties.cluster_id] = l; l.bindPopup(clusterPopup(f.properties, r)); }
   }).addTo(map);
+  function draw() {
+    clusterLayer.clearLayers();
+    const vis = clusters.filter(c => !isHidden(c));
+    clusterLayer.addData(vis.map(c => ({ type:"Feature", geometry:c.geom_wgs84, properties:c })));
+    const h = clusters.length - vis.length;
+    hiddenCount.textContent = h ? `מוסתרים: ${h}` : "";
+    drawParcels();
+    if (window.tTable) renderTable(vis, r, h);
+    return vis;
+  }
+  draw();
+  showLow_el().onchange = () => { showLow = showLow_el().checked; draw(); };
+  if (wantC) {
+    const l = byId[wantC];
+    if (!l) { hint.textContent = `המקבץ ${wantC} לא נמצא בריצה ${r.run_id}.`; }
+    else { map.fitBounds(l.getBounds(), { maxZoom: 17 }); l.openPopup(); }
+  }
   if (!window.tTable) return;  // גרסת מפה בלבד, בלי טבלה
-  renderTable(clusters, r);
   tMap.onclick = () => { table.style.display = "none"; document.getElementById("map").style.display = "block"; map.invalidateSize(); };
   tTable.onclick = () => { document.getElementById("map").style.display = "none"; table.style.display = "block"; };
-  tCsv.onclick = () => downloadCsv(clusters, r);
+  tCsv.onclick = () => downloadCsv(clusters, r);  // הקובץ כולל את כל המקבצים, עם עמודת הסימונים
+}
+window.addEventListener("hashchange", () => location.reload());
+const LOW = "צמודי קרקע";
+function isLow(c) { return (c.flags || []).includes(LOW); }
+function showLow_el() { return document.getElementById("showLow"); }
+function permalink(r, id) { return `${location.origin}${location.pathname}#run=${encodeURIComponent(r.run_id)}&c=${encodeURIComponent(id)}`; }
+function clusterPopup(c, r) {
+  const fl = (c.flags || []).join(", ");
+  return `<b>${esc(c.cluster_id)}</b><br>${c.area_dunam} דונם, ${c.apartments_est} דירות (אומדן, הנחה)` +
+    `<br>${fl ? "סימונים: " + esc(fl) : "בלי סימונים"}<br><small>${esc(c.parcel_keys.join(", "))}</small>` +
+    `<br><a href="${esc(permalink(r, c.cluster_id))}">קישור קבוע</a>`;
 }
 function reasonLine(group, x) {
   const parts = [x["סיבה"]];
@@ -159,9 +208,10 @@ function parcelPopup(p, x, c) {
   return lines.join("<br>");
 }
 const COLS = [["cluster_id","מקבץ"],["area_dunam","שטח (דונם)"],["apartments_est","דירות (אומדן)"],["flags","סימונים"],["parcel_keys","גוש-חלקה"]];
-function renderTable(cs, r) {
+function renderTable(cs, r, hidden) {
   const rows = cs.map(c => "<tr>" + COLS.map(([k]) => `<td>${esc(Array.isArray(c[k]) ? c[k].join(", ") : c[k])}</td>`).join("") + "</tr>").join("");
-  table.innerHTML = `<p>${cs.length} מקבצים. גודל דירה טיפוסי הוא הנחה. ${esc(NOTE)}</p><table><thead><tr>${COLS.map(c => `<th>${c[1]}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
+  const h = hidden ? ` מוסתרים: ${hidden} ("צמודי קרקע"). הקובץ להורדה כולל את כולם.` : "";
+  table.innerHTML = `<p>${cs.length} מקבצים.${h} גודל דירה טיפוסי הוא הנחה. ${esc(NOTE)}</p><table><thead><tr>${COLS.map(c => `<th>${c[1]}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
 }
 function downloadCsv(cs, r) {
   const q = v => '"' + String(Array.isArray(v) ? v.join("; ") : (v ?? "")).replace(/"/g, '""') + '"';
