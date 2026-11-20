@@ -51,7 +51,7 @@
 </div>
 <script>
 const sb = supabase.createClient("https://dqiivguyusktueioigpc.supabase.co", "sb_publishable_98oew8OXAF5ZoGVGmpAYfA_CJGe4nW3");
-const NOTE = "פער ידוע: תכניות לפני שלב קיום תנאי סף, חתימות בלי תכנית, ותכניות ישנות שלא הוכרזו אינן במקורות. נבדקות בשטח. מתחמים בשלב גישוש, לפני תכנית, לא מופיעים במקורות. הם נתפסים רק בבדיקת הכפילות מול מה שבטיפולנו ובשטח.";
+const NOTE = "פער ידוע: תכניות לפני שלב קיום תנאי סף, חתימות בלי תכנית, ותכניות ישנות שלא הוכרזו אינן במקורות. נבדקות בשטח. מתחמים בשלב גישוש, לפני תכנית, לא מופיעים במקורות. הם נתפסים רק בבדיקת הכפילות מול מה שבטיפולנו ובשטח. בנייה חדשה בהיתר, בלי תכנית חדשה, לא מזוהה כבנייה חדשה במקורות, ותכניות שאושרו לפני 9.2014 לא מופיעות בשכבת התכניות. נבדקים בשטח ובתצלום האוויר.";
 const COLORS = {"תפוסה":"#d62728","לבדיקה":"#ff9f1c","שימור":"#8c564b","התחדשות נקודתית":"#9467bd","פנויה":"#2ca02c"};
 document.getElementById("go").onclick = async () => {
   const { error } = await sb.auth.signInWithPassword({ email: email.value, password: pw.value });
@@ -172,6 +172,12 @@ window.addEventListener("hashchange", () => location.reload());
 const LOW = "צמודי קרקע";
 function isLow(c) { return (c.flags || []).includes(LOW); }
 function showLow_el() { return document.getElementById("showLow"); }
+// קישור לדף החלקה הציבורי של העירייה, באותה תבנית של השדה buildingFiles בשכבה RH_Tichnun/0 (הוחלט 20.11).
+// קישור בלבד: המפה לא שולפת ממנו ולא פונה לשרת. רק המשתמש פותח אותו.
+function parcelLink(pk) {
+  const [g, h] = String(pk).split("-");
+  return `https://handasi.complot.co.il/handasi2016/redirects/brfbg.htm?sid=118&g=${g}&h=${h}&m=`;
+}
 function permalink(r, id) { return `${location.origin}${location.pathname}#run=${encodeURIComponent(r.run_id)}&c=${encodeURIComponent(id)}`; }
 function clusterPopup(c, r, center) {
   const fl = (c.flags || []).join(", ");
@@ -181,7 +187,7 @@ function clusterPopup(c, r, center) {
   return `<b>${esc(c.cluster_id)}</b><br>${c.area_dunam} דונם, ${c.apartments_est} דירות (אומדן, הנחה)` +
     `<br>${fl ? "סימונים: " + esc(fl) : "בלי סימונים"}` +
     `<br><b>כתובות (${ad.length}):</b> ${ad.length ? esc(ad.join(", ")) : "אין"}` +
-    `<br><small>חלקות: ${esc(c.parcel_keys.join(", "))}</small>` +
+    `<br><small>חלקות: ${c.parcel_keys.map(k => `${esc(k)} (<a href="${esc(parcelLink(k))}" target="_blank" rel="noopener noreferrer">דף חלקה</a>)`).join(", ")}</small>` +
     `<br><a href="${esc(permalink(r, c.cluster_id))}">קישור קבוע</a>` +
     (aerial ? ` | <a href="${esc(aerial)}" target="_blank" rel="noopener noreferrer">תצלום אוויר</a>` : "");
 }
@@ -198,7 +204,7 @@ function reasonLine(group, x) {
   return `${group}: ${parts.filter(Boolean).join(", ")}`;
 }
 function parcelPopup(p, x, c) {
-  const lines = [`<b>${esc(p.parcel_key)}</b>`, esc(p.grp)];
+  const lines = [`<b>${esc(p.parcel_key)}</b> (<a href="${esc(parcelLink(p.parcel_key))}" target="_blank" rel="noopener noreferrer">דף חלקה</a>)`, esc(p.grp)];
   if (x.yeud_str) lines.push(`ייעוד: ${esc(x.yeud_str)}`);
   if (p.yeud_note) lines.push(esc(p.yeud_note));
   const reasons = x.reasons || {};
